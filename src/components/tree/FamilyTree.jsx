@@ -7,8 +7,10 @@ import { ADMIN_USERNAME, ADMIN_PASSWORD } from "../../config/auth";
 import { isNodeOpen, openChain } from "./personUtils";
 import "./FamilyTree.scss";
 import "./AdminLogin.scss";
+import seedData from "../../data/family-tree.json";
 
 const STORAGE_KEY = "family-tree-v1";
+const DATA_VERSION = 2; // ارفعه عند تغيير family-tree.json
 
 // ترتيب المؤسسين من فوق لتحت
 const FOUNDER_ORDER = [
@@ -50,14 +52,15 @@ const normalize = (nodes) =>
 const loadData = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (!Array.isArray(saved) || saved.length === 0) return INITIAL_FOUNDERS;
-    const clean = normalize(saved);
-    return clean.length > 0 ? clean : INITIAL_FOUNDERS;
+    if (saved?.version === DATA_VERSION && Array.isArray(saved.people)) {
+      const clean = normalize(saved.people);
+      if (clean.length > 0) return clean;
+    }
   } catch {
-    return INITIAL_FOUNDERS;
+    // بيانات تالفة، نتجاهلها
   }
+  return normalize(seedData);
 };
-
 // سلسلة الأشخاص من الجد لحد الشخص المطلوب (تشمل الاثنين)
 const pathTo = (person, id) => {
   if (person.id === id) return [person];
@@ -176,13 +179,16 @@ function FamilyTree() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(familyData));
-    } catch {
-      // التخزين ممتلئ أو مغلق، والشجرة تفضل شغالة
-    }
-  }, [familyData]);
+useEffect(() => {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ version: DATA_VERSION, people: familyData })
+    );
+  } catch {
+    // التخزين ممتلئ أو مغلق، والشجرة تفضل شغالة
+  }
+}, [familyData]);
 
   const sortedFounders = [...familyData].sort((a, b) => {
     const ia = FOUNDER_ORDER.indexOf(a.id);

@@ -1,9 +1,7 @@
-
-
 import FamilyTree from "./components/tree/FamilyTree";
 
 function App() {
-  return <FamilyTree/>;
+  return <FamilyTree />;
 }
 
 export default App;
