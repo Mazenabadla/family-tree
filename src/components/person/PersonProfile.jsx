@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import "./PersonProfile.scss";
 import PhotoField from "./PhotoField";
+import MediaSection from "../media/MediaSection";
 
 const EDUCATION = [
   { value: "", label: "اختر المستوى" },
@@ -81,14 +82,12 @@ const validate = (d) => {
   if (!d.mother.trim()) e.mother = "اسم الأم مطلوب";
   if (!d.birthDate) e.birthDate = "تاريخ الميلاد مطلوب";
   else if (new Date(d.birthDate) > new Date())
-    e.birthDate = "تاريخ الميلاد ما يصحش يكون في المستقبل";
+    e.birthDate = "تاريخ الميلاد لا يمكن أن يكون في المستقبل";
   if (d.deathDate && d.birthDate && d.deathDate < d.birthDate)
-    e.deathDate = "تاريخ الوفاة لازم يكون بعد تاريخ الميلاد";
+    e.deathDate = "تاريخ الوفاة يجب أن يكون بعد تاريخ الميلاد";
   if (!d.gender) e.gender = "اختر الجنس";
-  if (!d.idNumber.trim()) e.idNumber = "رقم الهوية مطلوب";
-  else if (!/^\d+$/.test(d.idNumber.trim())) e.idNumber = "رقم الهوية أرقام بس";
-  if (!d.email.trim()) e.email = "الإيميل مطلوب";
-  else if (!EMAIL_RE.test(d.email.trim())) e.email = "صيغة الإيميل مش صحيحة";
+  if (d.idNumber.trim() && !/^\d+$/.test(d.idNumber.trim())) e.idNumber = "رقم الهوية أرقام فقط";
+  if (d.email.trim() && !EMAIL_RE.test(d.email.trim())) e.email = "صيغة البريد الإلكتروني غير صحيحة";
   if (!d.maritalStatus) e.maritalStatus = "اختر الحالة الاجتماعية";
 
   if (d.maritalStatus === "married") {
@@ -163,7 +162,7 @@ function Field({ label, required, error, wide, children }) {
   );
 }
 
-function PersonProfile({ person, lineage, canEdit, onClose, onSave }) {
+function PersonProfile({ person, lineage, canEdit, onClose, onSave, onMediaChange }) {
   const [draft, setDraft] = useState(() => buildDraft(person));
   const [submitted, setSubmitted] = useState(false);
 
@@ -232,7 +231,7 @@ function PersonProfile({ person, lineage, canEdit, onClose, onSave }) {
     if (!canEdit) return;
     setSubmitted(true);
     if (Object.keys(validate(draft)).length) return;
-    const { name, ...profile } = cleanDraft(draft);
+    const { name, media, ...profile } = cleanDraft(draft);
     onSave(name, profile);
   };
 
@@ -254,7 +253,7 @@ function PersonProfile({ person, lineage, canEdit, onClose, onSave }) {
         </header>
 
         {!canEdit && (
-          <p className="pf-readonly">وضع العرض فقط. فعّل التحرير من الشريط العلوي للتعديل.</p>
+          <p className="pf-readonly">وضع العرض فقط. فعّل التحرير من الشريط العلوي لإجراء التعديل.</p>
         )}
 
         <div className="pf-scroll">
@@ -314,7 +313,7 @@ function PersonProfile({ person, lineage, canEdit, onClose, onSave }) {
                     </div>
                   </Field>
 
-                  <Field label="رقم الهوية" required error={errors.idNumber}>
+                  <Field label="رقم الهوية" error={errors.idNumber}>
                     <input
                       className="pf-input"
                       inputMode="numeric"
@@ -323,7 +322,7 @@ function PersonProfile({ person, lineage, canEdit, onClose, onSave }) {
                     />
                   </Field>
 
-                  <Field label="الإيميل" required error={errors.email}>
+                  <Field label="البريد الإلكتروني" error={errors.email}>
                     <input
                       type="email"
                       className="pf-input"
@@ -362,6 +361,7 @@ function PersonProfile({ person, lineage, canEdit, onClose, onSave }) {
 
               <section className="pf-section">
                 <h3 className="pf-section__title">الحالة الاجتماعية</h3>
+                <p className="pf-note">تُسجَّل الزوجات والبنات للتوثيق فقط، ولا تظهر في الشجرة لأن النسب يُتتبع من الذكور.</p>
                 <div className="pf-grid">
                   <Field label="الحالة" required error={errors.maritalStatus} wide>
                     <div className="pf-chips">
@@ -541,13 +541,21 @@ function PersonProfile({ person, lineage, canEdit, onClose, onSave }) {
                 <textarea
                   className="pf-input pf-textarea"
                   rows={6}
-                  placeholder={"كل سطر نقطة، مثلاً:\nيعمل في ...\nيسكن في ..."}
+                  placeholder={"اكتب كل معلومة في سطر مستقل، مثلاً:\nيعمل في ...\nيسكن في ..."}
                   value={draft.notes}
                   onChange={(e) => set("notes", e.target.value)}
                 />
               </section>
             </div>
           </fieldset>
+          <section className="pf-section">
+            <MediaSection
+              personName={person.name}
+              media={person.profile?.media || []}
+              canEdit={canEdit}
+              onChange={onMediaChange}
+            />
+          </section>
         </div>
 
         <footer className="pf-footer">

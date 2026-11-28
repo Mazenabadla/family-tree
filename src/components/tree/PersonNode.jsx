@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { LEVEL_COLORS, isNodeOpen, ageText, isDeceased, countPeople } from "./personUtils";
 import { IconUserPlus, IconResume, PersonAvatar } from "./icons";
+import { IconBranch, IconPencil } from "./icons-extra";
 
 const IconChevron = () => (
   <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"
@@ -10,7 +11,38 @@ const IconChevron = () => (
   </svg>
 );
 
-// بطاقة شخص: الضغط عليها يفتح أو يقفل الأبناء، والعدد يظهر كشارة لما تكون مقفولة
+// نموذج صغير لإدخال اسم: يُستخدم للإضافة وللتعديل
+function NameForm({ initial, placeholder, submitLabel, onSubmit, onCancel }) {
+  const [value, setValue] = useState(initial);
+
+  const submit = (e) => {
+    e.preventDefault();
+    const v = value.trim();
+    if (v) onSubmit(v);
+  };
+
+  return (
+    <form className="add-child-form" onSubmit={submit}>
+      <input
+        type="text"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => e.key === "Escape" && onCancel()}
+        aria-label={placeholder}
+        autoFocus
+      />
+      <div className="add-child-form__actions">
+        <button type="submit">{submitLabel}</button>
+        <button type="button" className="cancel-button" onClick={onCancel}>
+          إلغاء
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// بطاقة شخص: الضغط على الاسم يفتح الأبناء أو يقفلهم، وشريط الإجراءات تحت البطاقة
 function PersonNode({
   person,
   depth = 0,
@@ -20,16 +52,16 @@ function PersonNode({
   expanded = {},
   lineageMap = {},
   canEdit = false,
+  flashId = null,
   onToggle,
   onSelect,
   onAddChild,
+  onRename,
   onOpenProfile,
 }) {
-  const [showForm, setShowForm] = useState(false);
-  const [childName, setChildName] = useState("");
+  const [mode, setMode] = useState(null); // null | "add" | "rename"
   const [tip, setTip] = useState(null);
 
-  // حماية: لو الشخص ناقص نرجع بدون ما نكسر الصفحة
   if (!person) return null;
 
   const children = person.children || [];
@@ -52,24 +84,24 @@ function PersonNode({
   };
   const hideTip = () => setTip(null);
 
-  // الأزرار داخل البطاقة ما توصلش للنقر العام
-  const stop = (fn) => (e) => {
-    e.stopPropagation();
-    fn();
-  };
-
   const toggle = () => hasChildren && onToggle && onToggle(person.id, depth, rootDepth);
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    const n = childName.trim();
-    if (!n || !canEdit) return;
-    onAddChild(person.id, n);
-    setChildName("");
-    setShowForm(false);
+  const submitAdd = (name) => {
+    onAddChild(person.id, name);
+    setMode(null);
   };
 
-  const nodeClass = ["tree-node", isRoot && "tree-node--root", isLast && "is-last"]
+  const submitRename = (name) => {
+    onRename(person.id, name);
+    setMode(null);
+  };
+
+  const nodeClass = [
+    "tree-node",
+    isRoot && "tree-node--root",
+    isLast && "is-last",
+    flashId === person.id && "is-flash",
+  ]
     .filter(Boolean)
     .join(" ");
 
@@ -86,6 +118,7 @@ function PersonNode({
   return (
     <div className={nodeClass} style={nodeStyle}>
       <div
+        id={`node-${person.id}`}
         className={cardClass}
         onClick={toggle}
         role={hasChildren ? "button" : undefined}
@@ -97,7 +130,7 @@ function PersonNode({
             toggle();
           }
         }}
-        title={hasChildren ? (open ? "اضغط لطي الأجيال" : "اضغط لتوسيع الأجيال") : undefined}
+        title={hasChildren ? (open ? "اضغط لطي الأجيال" : "اضغط لعرض الأجيال") : undefined}
       >
         {hasChildren && !open && descendants > 0 && (
           <span className="person-card__badge" title={`${descendants} فرد في الذرية`}>
@@ -122,30 +155,55 @@ function PersonNode({
           {age && <div className="person-card__years">{age}</div>}
           {isRoot && <div className="person-card__years">{countPeople(person)} فرد</div>}
         </div>
+      </div>
 
-        <div className="person-card__actions">
-          {canEdit && (
-            <button
-              type="button"
-              className="mini"
-              title="إضافة أفراد جدد"
-              aria-label="إضافة أفراد جدد"
-              onClick={stop(() => setShowForm((v) => !v))}
-            >
-              <IconUserPlus />
-            </button>
-          )}
+      {/* شريط الإجراءات: خارج البطاقة حتى لا تتداخل الأزرار مع زر الفتح والطي */}
+      <div className="person-strip" role="toolbar" aria-label={`إجراءات ${person.name}`}>
+        <button
+          type="button"
+          className="mini"
+          title="عرض هذا الفرع وحده"
+          aria-label="عرض هذا الفرع وحده"
+          onClick={() => onSelect(person.id)}
+        >
+          <IconBranch />
+        </button>
 
+        {canEdit && (
           <button
             type="button"
             className="mini"
-            title="السيرة الذاتية"
-            aria-label="السيرة الذاتية"
-            onClick={stop(() => onOpenProfile && onOpenProfile(person.id))}
+            title="تعديل الاسم"
+            aria-label="تعديل الاسم"
+            aria-pressed={mode === "rename"}
+            onClick={() => setMode(mode === "rename" ? null : "rename")}
           >
-            <IconResume />
+            <IconPencil />
           </button>
-        </div>
+        )}
+
+        {canEdit && (
+          <button
+            type="button"
+            className="mini"
+            title="إضافة ابن"
+            aria-label="إضافة ابن"
+            aria-pressed={mode === "add"}
+            onClick={() => setMode(mode === "add" ? null : "add")}
+          >
+            <IconUserPlus />
+          </button>
+        )}
+
+        <button
+          type="button"
+          className="mini"
+          title="السيرة الذاتية"
+          aria-label="السيرة الذاتية"
+          onClick={() => onOpenProfile && onOpenProfile(person.id)}
+        >
+          <IconResume />
+        </button>
       </div>
 
       {tip &&
@@ -156,29 +214,26 @@ function PersonNode({
           document.body
         )}
 
-      {canEdit && showForm && (
-        <form className="add-child-form" onSubmit={handleSubmit}>
-          <input
-            type="text"
-            placeholder="اكتب اسم العضو الجديد"
-            value={childName}
-            onChange={(e) => setChildName(e.target.value)}
-            autoFocus
-          />
-          <div className="add-child-form__actions">
-            <button type="submit">إضافة</button>
-            <button
-              type="button"
-              className="cancel-button"
-              onClick={() => {
-                setShowForm(false);
-                setChildName("");
-              }}
-            >
-              إلغاء
-            </button>
-          </div>
-        </form>
+      {canEdit && mode === "add" && (
+        <NameForm
+          key="add"
+          initial=""
+          placeholder="اكتب اسم الابن"
+          submitLabel="إضافة"
+          onSubmit={submitAdd}
+          onCancel={() => setMode(null)}
+        />
+      )}
+
+      {canEdit && mode === "rename" && (
+        <NameForm
+          key="rename"
+          initial={person.name}
+          placeholder="الاسم الكامل"
+          submitLabel="حفظ الاسم"
+          onSubmit={submitRename}
+          onCancel={() => setMode(null)}
+        />
       )}
 
       {hasChildren && open && (
@@ -193,9 +248,11 @@ function PersonNode({
               expanded={expanded}
               lineageMap={lineageMap}
               canEdit={canEdit}
+              flashId={flashId}
               onToggle={onToggle}
               onSelect={onSelect}
               onAddChild={onAddChild}
+              onRename={onRename}
               onOpenProfile={onOpenProfile}
             />
           ))}
@@ -204,21 +261,5 @@ function PersonNode({
     </div>
   );
 }
-// سلسلة الأشخاص المفتوحين (كل واحد مفتوح وعنده أبناء): الشجرة والأعمدة بيستخدموها مع بعض
-export const openChain = (roots, expanded) => {
-  const out = [];
-  let list = roots;
-  let depth = 0;
-  while (true) {
-    const sel = list.find(
-      (n) => (n.children || []).length > 0 && isNodeOpen(expanded, n.id, depth, 0)
-    );
-    if (!sel) break;
-    out.push(sel);
-    list = sel.children;
-    depth += 1;
-  }
-  return out;
-};
 
 export default PersonNode;

@@ -1,16 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import PersonNode from "./PersonNode";
 import ColumnsView from "./ColumnsView";
 import PersonProfile from "../person/PersonProfile";
-import { ADMIN_USERNAME, ADMIN_PASSWORD } from "../../config/auth";
+import { verifyAdmin } from "../../config/auth";
+import { TREE_TITLE } from "../../config/app";
 import { isNodeOpen, openChain } from "./personUtils";
+import {
+  loadTree,
+  saveTree,
+  readLegacy,
+  clearLegacy,
+  getFile,
+  putFile,
+  clearFiles,
+} from "../../lib/storage";
+import { blobToDataUrl, dataUrlToBlob } from "../../lib/fileUtils";
 import "./FamilyTree.scss";
 import "./AdminLogin.scss";
 import seedData from "../../data/family-tree.json";
 
-const STORAGE_KEY = "family-tree-v1";
-const DATA_VERSION = 2; // ارفعه عند تغيير family-tree.json
+// ارفع هذا الرقم فقط عند تغيير شكل البيانات نفسه، لا عند تغيير محتوى الشجرة
+const DATA_VERSION = 3;
 
 // ترتيب المؤسسين من فوق لتحت
 const FOUNDER_ORDER = [
@@ -21,7 +32,7 @@ const FOUNDER_ORDER = [
   "founder-ibrahim",
 ];
 
-// خمسة أجداد مؤسسين، كل واحد جذر فرع مستقل تماماً
+// خمسة أجداد مؤسسين، كل واحد جذر فرع مستقل
 const INITIAL_FOUNDERS = [
   { id: "founder-osman-abdullah", name: "عثمان عبد الله", children: [] },
   { id: "founder-osman-gharbi", name: "عثمان الغربي", children: [] },
@@ -49,18 +60,6 @@ const normalize = (nodes) =>
       children: normalize(n.children),
     }));
 
-const loadData = () => {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.version === DATA_VERSION && Array.isArray(saved.people)) {
-      const clean = normalize(saved.people);
-      if (clean.length > 0) return clean;
-    }
-  } catch {
-    // بيانات تالفة، نتجاهلها
-  }
-  return normalize(seedData);
-};
 // سلسلة الأشخاص من الجد لحد الشخص المطلوب (تشمل الاثنين)
 const pathTo = (person, id) => {
   if (person.id === id) return [person];
@@ -118,11 +117,33 @@ const measureCardWidth = (names) => {
   return Math.max(MIN_CARD_W, Math.ceil(widest + 40 + 22 + 10 + 10 + 20 + 12));
 };
 
+// تطبيع للبحث العربي: يتجاهل التشكيل والفرق بين الهمزات والتاء المربوطة والألف المقصورة
+const normalizeAr = (s) =>
+  String(s)
+    .replace(/[\u064B-\u0652\u0640]/g, "")
+    .replace(/[إأآ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .toLowerCase();
+
+const saveErrorText = (err) =>
+  err?.name === "QuotaExceededError"
+    ? "المساحة ممتلئة. صدّر نسخة احتياطية ثم أعد المحاولة."
+    : "تعذر الحفظ. ستبقى التغييرات في الصفحة حتى إعادة التحميل.";
+
+const SAVE_LABELS = {
+  idle: "",
+  saving: "جارٍ الحفظ…",
+  saved: "تم الحفظ",
+  error: "تعذر الحفظ",
+};
+
 // نافذة دخول المشرف
 function AdminLogin({ onClose, onSuccess }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && onClose();
@@ -130,12 +151,21 @@ function AdminLogin({ onClose, onSuccess }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    if (user.trim() === ADMIN_USERNAME && pass === ADMIN_PASSWORD) {
-      onSuccess();
-    } else {
-      setError("اسم المستخدم أو كلمة المرور غلط");
+    setBusy(true);
+    setError("");
+    try {
+      const r = await verifyAdmin(user, pass);
+      if (r.ok) {
+        onSuccess();
+        return;
+      }
+      setError("اسم المستخدم أو كلمة المرور غير صحيحة");
+    } catch {
+      setError("تعذر التحقق في هذا المتصفح");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -158,7 +188,9 @@ function AdminLogin({ onClose, onSuccess }) {
         </label>
         {error && <p className="login-error">{error}</p>}
         <div className="login-actions">
-          <button type="submit" className="login-btn">دخول</button>
+          <button type="submit" className="login-btn" disabled={busy}>
+            {busy ? "جارٍ التحقق…" : "دخول"}
+          </button>
           <button type="button" className="login-btn login-btn--ghost" onClick={onClose}>
             إلغاء
           </button>
@@ -170,37 +202,103 @@ function AdminLogin({ onClose, onSuccess }) {
 }
 
 function FamilyTree() {
-  const [familyData, setFamilyData] = useState(loadData);
-  const [mode, setMode] = useState("tree");      // "tree" افتراضياً، أو "columns"
-  const [focusId, setFocusId] = useState(null);  // الفرع المركّز عليه في الشجرة (null = الكل)
-  // حالة التوسيع المشتركة بين الشجرة والأعمدة (المفتاح: المعرف)
+  // البيانات تبدأ فارغة حتى تُحمَّل من التخزين، فلا تُكتب الشجرة الأصلية فوق بيانات محفوظة
+  const [familyData, setFamilyData] = useState(null);
+  const [storageError, setStorageError] = useState("");
+  const [saveState, setSaveState] = useState("idle");
+  const [saveMsg, setSaveMsg] = useState("");
+  const legacyRef = useRef(false);
+  const importRef = useRef(null);
+
+  const [mode, setMode] = useState("tree"); // "tree" أو "columns"
+  const [focusId, setFocusId] = useState(null);
   const [expanded, setExpanded] = useState({});
   const [profileId, setProfileId] = useState(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [query, setQuery] = useState("");
+  const [flashId, setFlashId] = useState(null);
 
-useEffect(() => {
-  try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ version: DATA_VERSION, people: familyData })
-    );
-  } catch {
-    // التخزين ممتلئ أو مغلق، والشجرة تفضل شغالة
-  }
-}, [familyData]);
+  // تحميل البيانات مرة واحدة: من IndexedDB، ثم من النسخة القديمة إن وُجدت، ثم من الملف الأصلي
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let people = null;
+      let fromLegacy = false;
+      try {
+        const saved = await loadTree();
+        if (Array.isArray(saved?.people)) people = saved.people;
+      } catch {
+        setStorageError("تعذر فتح التخزين في هذا المتصفح، والتغييرات لن تُحفظ بعد إغلاق الصفحة.");
+      }
+      if (!people) {
+        const legacy = readLegacy();
+        if (legacy) {
+          people = legacy;
+          fromLegacy = true;
+        }
+      }
+      if (cancelled) return;
+      legacyRef.current = fromLegacy;
+      setFamilyData(normalize(people && people.length ? people : seedData));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const sortedFounders = [...familyData].sort((a, b) => {
-    const ia = FOUNDER_ORDER.indexOf(a.id);
-    const ib = FOUNDER_ORDER.indexOf(b.id);
-    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-  });
+  // الحفظ عند كل تغيير، مع حالة ظاهرة للمستخدم
+  useEffect(() => {
+    if (!familyData || storageError) return;
+    setSaveState("saving");
+    saveTree({ version: DATA_VERSION, people: familyData, savedAt: Date.now() })
+      .then(() => {
+        if (legacyRef.current) {
+          clearLegacy();
+          legacyRef.current = false;
+        }
+        setSaveMsg("");
+        setSaveState("saved");
+      })
+      .catch((err) => {
+        setSaveMsg(saveErrorText(err));
+        setSaveState("error");
+      });
+  }, [familyData, storageError]);
+
+  const data = familyData ?? [];
+
+  const sortedFounders = useMemo(
+    () =>
+      [...data].sort((a, b) => {
+        const ia = FOUNDER_ORDER.indexOf(a.id);
+        const ib = FOUNDER_ORDER.indexOf(b.id);
+        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+      }),
+    [data]
+  );
+
+  // هذه القيم تُحسب فقط عند تغيير البيانات، لا عند كل نقرة على بطاقة
+  const lineageMap = useMemo(() => buildLineage(data), [data]);
+  const cardW = useMemo(() => measureCardWidth(collectNames(data)), [data]);
+
+  const hits = useMemo(() => {
+    const q = normalizeAr(query.trim());
+    if (!q) return [];
+    const out = [];
+    const walk = (list) =>
+      list.forEach((n) => {
+        if (normalizeAr(n.name).includes(q)) out.push(n);
+        walk(n.children);
+      });
+    walk(data);
+    return out.slice(0, 8);
+  }, [query, data]);
 
   // ---------- الشجرة ----------
-  // مسار الفرع المركّز عليه (من الجد لحد الفرع)
   const focusPath = (() => {
     if (!focusId) return null;
-    for (const f of familyData) {
+    for (const f of data) {
       const p = pathTo(f, focusId);
       if (p) return p;
     }
@@ -209,13 +307,9 @@ useEffect(() => {
   const focusDepth = focusPath ? focusPath.length - 1 : 0;
   const treeRoots = focusPath ? [focusPath[focusPath.length - 1]] : sortedFounders;
 
-  // ---------- الأعمدة + المسار المفتوح (نفس الحالة اللي بتستخدمها الشجرة) ----------
+  // ---------- الأعمدة والمسار المفتوح (نفس الحالة المشتركة مع الشجرة) ----------
   const openNodes = openChain(sortedFounders, expanded);
 
-  const lineageMap = buildLineage(familyData);
-  const cardW = measureCardWidth(collectNames(familyData));
-
-  // زرار توسيع/طي الكل في الشجرة
   const parents = collectParents(treeRoots, focusDepth);
   const allOpen = parents.length > 0 && parents.every((p) => isNodeOpen(expanded, p.id, p.depth, 0));
 
@@ -230,13 +324,12 @@ useEffect(() => {
     });
   };
 
-  // الضغط على بطاقة في الشجرة: يفتح أو يقفل الأبناء
   const toggleNode = (id, depth) =>
     setExpanded((prev) => ({ ...prev, [id]: !isNodeOpen(prev, id, depth, 0) }));
 
-  // زرار "عرض الفرع": يركّز الشجرة على الشخص، ويفتح طريقه من الجد (فالأعمدة تعرض نفس الطريق)
+  // "عرض هذا الفرع وحده": يركّز الشجرة على الشخص ويفتح طريقه من الجد
   const focusPerson = (personId) => {
-    const f = familyData.find((x) => pathTo(x, personId));
+    const f = data.find((x) => pathTo(x, personId));
     if (!f) return;
     const p = pathTo(f, personId);
     setExpanded((prev) => {
@@ -249,15 +342,35 @@ useEffect(() => {
     setFocusId(personId);
   };
 
+  // ---------- البحث: يفتح طريق الشخص، ويمرر الشاشة إليه، ويضيء البطاقة لحظات ----------
+  const revealPerson = (id) => {
+    const f = data.find((x) => pathTo(x, id));
+    if (!f) return;
+    const p = pathTo(f, id);
+    setExpanded((prev) => {
+      const copy = { ...prev };
+      p.forEach((n) => {
+        copy[n.id] = true;
+      });
+      return copy;
+    });
+    setFocusId(null);
+    setMode("tree");
+    setQuery("");
+    setFlashId(id);
+    window.setTimeout(() => {
+      document.getElementById(`node-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 80);
+    window.setTimeout(() => setFlashId(null), 2400);
+  };
+
   // ---------- الأعمدة ----------
-  // يقفل كل الأشخاص اللي تحت المستوى i (يعني المستوى i يبقى آخر مفتوح)
   const closeBelow = (i) => {
     const n = openNodes[i];
     if (!n) return;
     setExpanded((prev) => ({ ...prev, [n.id]: false }));
   };
 
-  // الضغط على صف في عمود k: يفتح أو يقفل الشخص، ويقفل إخوته في نفس العمود
   const pickColumn = (k, id) => {
     const list = k === 0 ? sortedFounders : openNodes[k - 1].children;
     const node = list.find((n) => n.id === id);
@@ -272,7 +385,7 @@ useEffect(() => {
     });
   };
 
-  // ---------- التعديل (لازم وضع التحرير مفتوح) ----------
+  // ---------- التعديل (يتطلب تفعيل وضع التحرير) ----------
   const addChild = (parentId, childName) => {
     if (!editMode) return;
     const child = { id: newId(), name: childName, children: [] };
@@ -288,23 +401,111 @@ useEffect(() => {
     setExpanded((prev) => ({ ...prev, [parentId]: true }));
   };
 
-  const updatePerson = (id, patch) => {
+  // التحديث يقرأ أحدث نسخة من الشخص، فلا يضيع تغيير حدث أثناء فتح النافذة
+  const updatePersonWith = (id, makePatch) => {
     if (!editMode) return;
     setFamilyData((prev) =>
       (function walk(list) {
         return list.map((person) =>
           person.id === id
-            ? { ...person, ...patch }
+            ? { ...person, ...makePatch(person) }
             : { ...person, children: walk(person.children) }
         );
       })(prev)
     );
   };
 
-  const resetTree = () => {
+  const updatePerson = (id, patch) => updatePersonWith(id, () => patch);
+
+  const renamePerson = (id, name) => updatePerson(id, { name });
+
+  const resetTree = async () => {
     if (!editMode) return;
-    if (!window.confirm("مسح كل الأفراد وإعادة الشجرة للوضع الفارغ؟")) return;
-    setFamilyData(INITIAL_FOUNDERS);
+    if (!window.confirm("مسح كل الأفراد والوسائط وإعادة الشجرة إلى وضعها الأصلي؟")) return;
+    try {
+      await clearFiles();
+    } catch {
+      window.alert("تعذر مسح الملفات المحفوظة. لم تُعد الشجرة.");
+      return;
+    }
+    setFamilyData(normalize(INITIAL_FOUNDERS));
+    setExpanded({});
+    setFocusId(null);
+    setProfileId(null);
+  };
+
+  // ---------- النسخ الاحتياطي: الملفات تُضمَّن كنص داخل النسخة لتكون قابلة للنقل ----------
+  const embedMedia = async (nodes) =>
+    Promise.all(
+      nodes.map(async (n) => {
+        const list = n.profile?.media || [];
+        let profile = n.profile;
+        if (list.length) {
+          const media = await Promise.all(
+            list.map(async (m) => {
+              if (!m.fileId) return m;
+              const blob = await getFile(m.fileId);
+              return blob ? { ...m, data: await blobToDataUrl(blob) } : m;
+            })
+          );
+          profile = { ...n.profile, media };
+        }
+        return { ...n, profile, children: await embedMedia(n.children) };
+      })
+    );
+
+  const extractMedia = async (nodes) => {
+    for (const n of nodes) {
+      for (const m of n.profile?.media || []) {
+        if (!m.data) continue;
+        const fileId = m.fileId || newId();
+        await putFile(fileId, await dataUrlToBlob(m.data));
+        m.fileId = fileId;
+        delete m.data;
+      }
+      await extractMedia(n.children);
+    }
+  };
+
+  const exportData = async () => {
+    try {
+      const people = await embedMedia(data);
+      const blob = new Blob([JSON.stringify({ version: DATA_VERSION, people }, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `family-tree-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      window.alert("تعذر تجهيز النسخة الاحتياطية. جرّب مرة أخرى.");
+    }
+  };
+
+  const onImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    let people;
+    try {
+      const parsed = JSON.parse(await file.text());
+      people = Array.isArray(parsed) ? parsed : parsed?.people;
+      if (!Array.isArray(people)) throw new Error("invalid");
+    } catch {
+      window.alert("الملف غير صالح. تأكد أنه نسخة صادرة من هذا التطبيق.");
+      return;
+    }
+    if (!window.confirm("استيراد هذه النسخة يستبدل الشجرة والوسائط الحالية. هل تريد المتابعة؟")) return;
+    try {
+      await clearFiles();
+      await extractMedia(people);
+    } catch {
+      window.alert("تعذر استعادة الوسائط من النسخة. لم تُستبدل الشجرة.");
+      return;
+    }
+    setFamilyData(normalize(people));
     setExpanded({});
     setFocusId(null);
     setProfileId(null);
@@ -324,10 +525,22 @@ useEffect(() => {
     setLoginOpen(false);
   };
 
-  const profilePerson = profileId ? findById(familyData, profileId) : null;
+  if (!familyData) {
+    return (
+      <div className="family-tree">
+        <p className="tree-loading" role="status">جارٍ تحميل الشجرة…</p>
+      </div>
+    );
+  }
+
+  const profilePerson = profileId ? findById(data, profileId) : null;
 
   return (
     <div className="family-tree" style={{ "--card-w": `${cardW}px` }}>
+      {storageError && (
+        <p className="storage-banner" role="alert">{storageError}</p>
+      )}
+
       <div className="tree-toolbar">
         <div className="tree-toolbar__path">
           {mode === "tree" ? (
@@ -349,7 +562,7 @@ useEffect(() => {
                 )}
               </nav>
             ) : (
-              <h2 className="tree-title">شجرة العبادلة</h2>
+              <h2 className="tree-title">{TREE_TITLE}</h2>
             )
           ) : openNodes.length ? (
             <nav className="breadcrumb" aria-label="مسار الأعمدة">
@@ -369,11 +582,40 @@ useEffect(() => {
               )}
             </nav>
           ) : (
-            <h2 className="tree-title">شجرة العبادلة</h2>
+            <h2 className="tree-title">{TREE_TITLE}</h2>
+          )}
+        </div>
+
+        <div className="tree-search">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="ابحث عن فرد بالاسم"
+            aria-label="ابحث عن فرد بالاسم"
+          />
+          {hits.length > 0 && (
+            <ul className="search-results" role="listbox" aria-label="نتائج البحث">
+              {hits.map((n) => {
+                const lineage = lineageMap[n.id] || [n.name];
+                return (
+                  <li key={n.id}>
+                    <button type="button" onClick={() => revealPerson(n.id)}>
+                      <span>{n.name}</span>
+                      <small>{lineage.slice(1, 3).join(" بن ") || "من المؤسسين"}</small>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </div>
 
         <div className="toolbar-actions">
+          <span className={`save-status save-status--${saveState}`} aria-live="polite" title={saveMsg}>
+            {saveState === "error" ? saveMsg : SAVE_LABELS[saveState]}
+          </span>
+
           <label className="view-select">
             <span>طريقة العرض</span>
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
@@ -417,9 +659,11 @@ useEffect(() => {
                 expanded={expanded}
                 lineageMap={lineageMap}
                 canEdit={editMode}
+                flashId={flashId}
                 onToggle={toggleNode}
                 onSelect={focusPerson}
                 onAddChild={addChild}
+                onRename={renamePerson}
                 onOpenProfile={setProfileId}
               />
             ))}
@@ -436,11 +680,20 @@ useEffect(() => {
         />
       )}
 
-      {mode === "tree" && editMode && (
+      {editMode && (
         <div className="tree-footer">
-          <button type="button" className="tree-btn tree-btn--danger" onClick={resetTree}>
-            إعادة ضبط الشجرة
+          <button type="button" className="tree-btn tree-btn--ghost" onClick={exportData}>
+            تصدير نسخة احتياطية
           </button>
+          <button type="button" className="tree-btn tree-btn--ghost" onClick={() => importRef.current?.click()}>
+            استيراد نسخة
+          </button>
+          <input ref={importRef} type="file" accept="application/json" hidden onChange={onImportFile} />
+          {mode === "tree" && (
+            <button type="button" className="tree-btn tree-btn--danger" onClick={resetTree}>
+              إعادة ضبط الشجرة
+            </button>
+          )}
         </div>
       )}
 
@@ -452,9 +705,17 @@ useEffect(() => {
           canEdit={editMode}
           onClose={() => setProfileId(null)}
           onSave={(name, profile) => {
-            updatePerson(profilePerson.id, { name, profile });
+            updatePersonWith(profilePerson.id, (cur) => ({
+              name,
+              profile: { ...cur.profile, ...profile },
+            }));
             setProfileId(null);
           }}
+          onMediaChange={(list) =>
+            updatePersonWith(profilePerson.id, (cur) => ({
+              profile: { ...cur.profile, media: list },
+            }))
+          }
         />
       )}
 

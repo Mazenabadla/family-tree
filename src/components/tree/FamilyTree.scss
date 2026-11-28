@@ -712,3 +712,133 @@ $border: #dce3e8;
     .col { flex-basis: 210px; }
   }
 }
+// ---------- الإضافات الجديدة: شريط الإجراءات، البحث، حالة الحفظ، النسخ الاحتياطي ----------
+.family-tree {
+  .person-strip {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 6px;
+    min-height: 26px;
+    .mini {
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mini[aria-pressed="true"] {
+      background: #315f75;
+      color: #fff;
+    }
+  }
+
+  .tree-node.is-flash > .person-card {
+    outline: 3px solid #f59e0b;
+    outline-offset: 3px;
+    transition: outline-color 0.4s ease;
+  }
+
+  .tree-search {
+    position: relative;
+    min-width: 200px;
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 12px;
+      border: 1px solid #cfd9e0;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      background: #fff;
+    }
+  }
+
+  .search-results {
+    position: absolute;
+    top: calc(100% + 4px);
+    inset-inline-start: 0;
+    inset-inline-end: 0;
+    z-index: 50;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    background: #fff;
+    border: 1px solid #dce3e8;
+    border-radius: 10px;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+    max-height: 320px;
+    overflow-y: auto;
+    li button {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      padding: 8px 10px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      font-family: inherit;
+      color: #263746;
+      text-align: start;
+      cursor: pointer;
+      &:hover,
+      &:focus-visible {
+        background: #e8eff2;
+      }
+      small {
+        color: #5b6b75;
+        font-size: 12px;
+      }
+    }
+  }
+
+  .save-status {
+    font-size: 13px;
+    color: #5b6b75;
+    white-space: nowrap;
+    &--error {
+      color: #b42318;
+      font-weight: 600;
+    }
+  }
+
+  .storage-banner {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: #fef3c7;
+    color: #78350f;
+    font-size: 14px;
+  }
+
+  .tree-loading {
+    text-align: center;
+    color: #5b6b75;
+    padding: 60px 0;
+  }
+
+  .tree-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 24px;
+  }
+
+  :focus-visible {
+    outline: 2px solid #f59e0b;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .family-tree *,
+  .family-tree *::before,
+  .family-tree *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto;
+  }
+}

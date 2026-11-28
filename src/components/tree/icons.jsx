@@ -28,7 +28,7 @@ export const IconUserPlus = ({ size = 12 }) => (
   </svg>
 );
 
-// أيقونة السيرة الذاتية: ورقة فيها شخص (مش حرف i)
+// أيقونة السيرة الذاتية: ورقة فيها شخص (وليس حرف i)
 export const IconResume = ({ size = 13 }) => (
   <svg {...base} width={size} height={size} strokeWidth="2">
     <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
